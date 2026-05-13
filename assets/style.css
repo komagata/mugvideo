@@ -1,0 +1,10 @@
+window {
+  background: #202124;
+}
+
+.preview {
+  background: #111111;
+  color: #ffffff;
+  min-width: 360px;
+  min-height: 640px;
+}

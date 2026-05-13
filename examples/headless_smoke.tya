@@ -1,0 +1,11 @@
+import magvideo
+
+class Smoke
+  static main = ->
+    opts = Settings.defaults()
+    rec = Recorder.new(opts)
+    rec.start()
+    path = rec.stop()
+    println(path)
+
+Smoke.main()

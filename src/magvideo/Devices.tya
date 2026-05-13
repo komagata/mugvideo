@@ -1,0 +1,6 @@
+class Devices
+  static cameras = ->
+    return magvideo_media_devices_native("camera")
+
+  static microphones = ->
+    return magvideo_media_devices_native("microphone")

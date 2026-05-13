@@ -1,0 +1,17 @@
+class Upload
+  static after_recording = file_path, settings ->
+    mode = settings["clipboard_mode"]
+    if mode == "local_file"
+      return { ok: true, path: file_path, url: "" }
+    key = Storage.key_for(file_path)
+    result = magvideo_upload_put_native(file_path, settings["upload_destination"], key, Settings.content_type(settings))
+    if result["ok"]
+      return { ok: true, path: file_path, url: result["url"] }
+    return { ok: false, path: file_path, url: "", error: result["error"] }
+
+  static test_settings = settings ->
+    if settings["clipboard_mode"] == "local_file"
+      return { ok: true, message: "local file mode" }
+    if settings["upload_destination"] == ""
+      return { ok: false, message: "upload destination is not configured" }
+    return { ok: true, message: "upload destination is configured" }

@@ -1,0 +1,78 @@
+class Recorder
+  static new = settings ->
+    magvideo_media_init_native()
+    return Recorder(settings)
+
+  initialize = settings ->
+    self.settings = settings
+    self.camera = Devices.cameras()[0]
+    self.microphone = Devices.microphones()[0]
+    self.handle = nil
+    self.recording = false
+    self.output_path = ""
+    self.error = ""
+
+  cameras = ->
+    return Devices.cameras()
+
+  microphones = ->
+    return Devices.microphones()
+
+  select_camera = name ->
+    if self.recording
+      self.error = "stop recording before switching camera"
+      return false
+    self.camera = name
+    return true
+
+  select_microphone = name ->
+    if self.recording
+      self.error = "stop recording before switching microphone"
+      return false
+    self.microphone = name
+    return true
+
+  start_preview = sink ->
+    self.preview_handle = magvideo_media_start_preview_native(self.camera, sink)
+    return self
+
+  stop_preview = ->
+    if self.preview_handle != nil
+      magvideo_media_stop_preview_native(self.preview_handle)
+    return self
+
+  start = ->
+    if self.recording
+      return self
+    self.output_path = Storage.output_path(self.settings)
+    self.handle = magvideo_media_start_recording_native(self.camera, self.microphone, self.output_path, self.settings["output_format"])
+    self.recording = true
+    return self
+
+  stop = ->
+    if not self.recording
+      return self.output_path
+    self.output_path = magvideo_media_stop_recording_native(self.handle)
+    self.recording = false
+    return self.output_path
+
+  elapsed = ->
+    if self.handle == nil
+      return 0
+    return magvideo_media_elapsed_native(self.handle)
+
+  progress = ->
+    elapsed = self.elapsed()
+    max = self.settings["max_duration_seconds"]
+    if max <= 0
+      return 0
+    value = elapsed / max
+    if value > 1
+      return 1
+    return value
+
+  last_error = ->
+    native = magvideo_media_last_error_native()
+    if native != ""
+      return native
+    return self.error

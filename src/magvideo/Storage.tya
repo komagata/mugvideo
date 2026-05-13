@@ -1,0 +1,8 @@
+import path as path
+
+class Storage
+  static output_path = settings ->
+    return path.Path.join([settings["output_dir"], "magvideo-output" + Settings.extension(settings)])
+
+  static key_for = file_path ->
+    return "magvideo/" + path.Path.basename(file_path)

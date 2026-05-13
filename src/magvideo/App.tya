@@ -1,0 +1,47 @@
+import gtk4
+
+class App
+  static main = argv ->
+    app = Application.new("org.tya.magvideo")
+    app.on_activate(App.activate)
+    return app.run(argv)
+
+  static activate = app ->
+    settings = Settings.load()
+    recorder = Recorder.new(settings)
+    window = Window.new(app)
+    window.set_title("magvideo")
+    window.set_default_size(420, 760)
+    window.set_decorated(false)
+
+    root = Box.vertical(10)
+    root.set_margin(12, 12, 12, 12)
+    preview = Label.new("9:16 camera preview\n" + recorder.camera)
+    root.append(preview)
+
+    elapsed = Label.new("0s")
+    progress = ProgressBar.new()
+    camera = DropDown.from_strings(recorder.cameras())
+    microphone = DropDown.from_strings(recorder.microphones())
+    record = Button.new("[REC]")
+    settings_button = Button.new("[SET]")
+
+    root.append(elapsed)
+    root.append(progress)
+    root.append(camera)
+    root.append(microphone)
+    root.append(record)
+    root.append(settings_button)
+
+    record.on_clicked(App.record_clicked)
+    settings_button.on_clicked(App.settings_clicked)
+    recorder.start_preview(preview)
+    window.set_child(root)
+    window.present()
+    app.quit_after(150)
+
+  static record_clicked = _value ->
+    return nil
+
+  static settings_clicked = _value ->
+    return nil

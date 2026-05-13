@@ -1,0 +1,28 @@
+name = "magvideo"
+version = "0.1.0"
+
+[dependencies]
+gtk4 = { path = "../tya-gtk4" }
+
+[native]
+sources = ["native/magvideo_media.c", "native/magvideo_upload.c"]
+headers = ["include/magvideo_media.h", "include/magvideo_upload.h"]
+include_dirs = ["include"]
+pkg_config = ["gtk4", "gstreamer-1.0", "gstreamer-video-1.0", "gstreamer-audio-1.0", "gstreamer-app-1.0"]
+cflags = []
+ldflags = []
+
+[native.functions]
+magvideo_media_init_native = { symbol = "tya_magvideo_media_init", arity = 0 }
+magvideo_media_devices_native = { symbol = "tya_magvideo_media_devices", arity = 1 }
+magvideo_media_start_preview_native = { symbol = "tya_magvideo_media_start_preview", arity = 2 }
+magvideo_media_stop_preview_native = { symbol = "tya_magvideo_media_stop_preview", arity = 1 }
+magvideo_media_start_recording_native = { symbol = "tya_magvideo_media_start_recording", arity = 4 }
+magvideo_media_stop_recording_native = { symbol = "tya_magvideo_media_stop_recording", arity = 1 }
+magvideo_media_elapsed_native = { symbol = "tya_magvideo_media_elapsed", arity = 1 }
+magvideo_media_last_error_native = { symbol = "tya_magvideo_media_last_error", arity = 0 }
+magvideo_media_open_file_native = { symbol = "tya_magvideo_media_open_file", arity = 1 }
+magvideo_clipboard_set_file_native = { symbol = "tya_magvideo_clipboard_set_file", arity = 1 }
+magvideo_upload_put_native = { symbol = "tya_magvideo_upload_put", arity = 4 }
+magvideo_config_dir_native = { symbol = "tya_magvideo_config_dir", arity = 0 }
+magvideo_output_dir_native = { symbol = "tya_magvideo_output_dir", arity = 0 }
