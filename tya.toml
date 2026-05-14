@@ -2,7 +2,7 @@ name = "magvideo"
 version = "0.1.0"
 
 [dependencies]
-gtk4 = { path = "../tya-gtk4" }
+gtk4 = { git = "https://github.com/komagata/tya-gtk4", tag = "v0.1.0" }
 
 [native]
 sources = ["native/magvideo_media.c", "native/magvideo_upload.c"]
