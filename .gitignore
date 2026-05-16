@@ -1,5 +1,4 @@
-.tya/
 tmp/
 *.o
 *.so
-/magvideo
+/mugvideo

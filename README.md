@@ -1,15 +1,12 @@
-# magvideo
+# mugvideo
 
-Magvideo is a small Tya + GTK4 desktop app for recording short vertical selfie videos.
+Mugvideo is a small C + GTK4 desktop app for recording short selfie videos.
 
 ## Requirements
 
-- Tya with native package support
 - GTK4 development files
 - GStreamer development files:
   - `gstreamer-1.0`
-  - `gstreamer-video-1.0`
-  - `gstreamer-audio-1.0`
   - `gstreamer-app-1.0`
 
 ## Development
@@ -17,16 +14,13 @@ Magvideo is a small Tya + GTK4 desktop app for recording short vertical selfie v
 ```sh
 pkg-config --exists gtk4
 pkg-config --exists gstreamer-1.0
-pkg-config --exists gstreamer-video-1.0
-pkg-config --exists gstreamer-audio-1.0
-tya install
-tya doctor native
-tya test
-tya run src/main.tya
+pkg-config --exists gstreamer-app-1.0
+make
+./mugvideo
 ```
 
-The first release keeps media handling behind `native/magvideo_media.c`. Headless tests verify device enumeration, recording state transitions, MP4 default output, clipboard fallback, and upload URL generation. Manual camera and microphone smoke testing is still required on a desktop session.
+The current C version provides a GTK4 UI, GStreamer camera preview, device selection, recording state UI, settings persistence, MP4 recording, and clipboard copy of the saved file path.
 
 ## Settings
 
-Settings are stored in `~/.config/magvideo/settings.toml`. Defaults use MP4/H.264/AAC compatibility mode, 720x1280 geometry, 30 fps, and local file clipboard mode. WebM is available as an explicit open-format option and may not play in Discord on iOS/iPadOS.
+Settings are stored in `~/.config/mugvideo/settings.ini`. The default output directory is `~/Videos/mugvideo`.

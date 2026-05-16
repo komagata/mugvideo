@@ -1,3 +1,0 @@
-import magvideo
-
-App.main(args())

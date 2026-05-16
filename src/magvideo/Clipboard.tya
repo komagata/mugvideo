@@ -1,7 +1,0 @@
-class Clipboard
-  static copy_result = result, settings ->
-    mode = settings["clipboard_mode"]
-    if mode == "local_file"
-      ok = magvideo_clipboard_set_file_native(result["path"])
-      return { ok: ok, text: result["path"] }
-    return { ok: true, text: result["url"] }
