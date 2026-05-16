@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Mugvideo
+Comment=Record short selfie videos
+Exec=mugvideo
+Terminal=false
+Categories=AudioVideo;Recorder;GTK;
+StartupNotify=true

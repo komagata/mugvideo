@@ -17,6 +17,7 @@ run: $(TARGET)
 
 install: $(TARGET)
 	install -Dm755 $(TARGET) $(DESTDIR)$(PREFIX)/bin/$(TARGET)
+	install -Dm644 data/mugvideo.desktop $(DESTDIR)$(PREFIX)/share/applications/mugvideo.desktop
 
 clean:
 	rm -f $(TARGET)
