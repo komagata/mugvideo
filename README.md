@@ -2,6 +2,10 @@
 
 Mugvideo is a small C + GTK4 desktop app for recording short selfie videos.
 
+![Mugvideo screenshot](docs/screenshot.png)
+
+Mugvideo shows a live camera preview, camera and microphone selectors, a microphone input meter, and simple record/settings controls in a compact GTK4 window. Recorded videos are saved as MP4 files and copied to the clipboard as a file item so they can be pasted into compatible apps.
+
 ## Install
 
 ### Arch Linux / Omarchy
