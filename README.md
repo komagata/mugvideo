@@ -33,19 +33,13 @@ To install somewhere else:
 curl -fsSL https://raw.githubusercontent.com/komagata/mugvideo/main/install.sh | PREFIX="$HOME/.local" sh
 ```
 
-## Requirements
+## Notes
 
-- GTK4 development files
-- GStreamer development files:
-  - `gstreamer-1.0`
-  - `gstreamer-app-1.0`
-- GStreamer plugins for camera, MP4, and audio encoding:
-  - base
-  - good
-  - bad
-  - libav
+The install commands above install the required GTK4 and GStreamer packages for you.
 
 ## Development
+
+For development or manual builds, install GTK4, GStreamer, and the GStreamer plugins for camera input, MP4 output, and audio encoding.
 
 ```sh
 pkg-config --exists gtk4
