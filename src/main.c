@@ -9,11 +9,14 @@
 #include <time.h>
 #include <unistd.h>
 
+#define LEVEL_SEGMENTS 12
+
 typedef struct {
   GtkWidget *window;
   GtkWidget *preview;
   GtkWidget *elapsed;
-  GtkWidget *progress;
+  GtkWidget *level_meter;
+  GtkWidget *level_segments[LEVEL_SEGMENTS];
   GtkWidget *camera;
   GtkWidget *microphone;
   GtkWidget *record;
@@ -22,12 +25,19 @@ typedef struct {
   GtkWidget *settings_root;
   GtkStringList *camera_model;
   GtkStringList *microphone_model;
+  GPtrArray *microphone_ids;
   GstElement *preview_pipeline;
   GstElement *record_pipeline;
+  GstElement *level_pipeline;
   GstElement *appsink;
+  GstBus *record_bus;
+  GstBus *level_bus;
   guint preview_timer;
   guint tick_timer;
+  guint record_bus_watch;
+  guint level_bus_watch;
   gboolean recording;
+  double audio_level;
   time_t started_at;
   char config_dir[1024];
   char settings_path[1200];
@@ -158,6 +168,65 @@ static GtkStringList *device_names(const char *klass, const char *fallback) {
   return names;
 }
 
+static GtkStringList *microphone_devices(GPtrArray **ids) {
+  GtkStringList *names = gtk_string_list_new(NULL);
+  *ids = g_ptr_array_new_with_free_func(g_free);
+
+  GstDeviceMonitor *monitor = gst_device_monitor_new();
+  gst_device_monitor_add_filter(monitor, "Audio/Source", NULL);
+  gst_device_monitor_start(monitor);
+
+  GList *devices = gst_device_monitor_get_devices(monitor);
+  for (GList *node = devices; node != NULL; node = node->next) {
+    GstDevice *device = GST_DEVICE(node->data);
+    const char *display_name = gst_device_get_display_name(device);
+    char *id = NULL;
+
+    GstStructure *props = gst_device_get_properties(device);
+    if (props != NULL) {
+      const char *node_name = gst_structure_get_string(props, "node.name");
+      if (node_name != NULL && node_name[0] != '\0') id = g_strdup(node_name);
+      gst_structure_free(props);
+    }
+
+    if (display_name != NULL && display_name[0] != '\0' && id != NULL) {
+      guint number = g_list_model_get_n_items(G_LIST_MODEL(names)) + 1;
+      char *label = g_strdup_printf("%s (%u)", display_name, number);
+      gtk_string_list_append(names, label);
+      g_ptr_array_add(*ids, id);
+      g_free(label);
+    } else {
+      g_free(id);
+    }
+  }
+  g_list_free_full(devices, (GDestroyNotify)gst_object_unref);
+  gst_device_monitor_stop(monitor);
+  gst_object_unref(monitor);
+
+  if (g_list_model_get_n_items(G_LIST_MODEL(names)) == 0) {
+    gtk_string_list_append(names, "Default microphone");
+    g_ptr_array_add(*ids, g_strdup(""));
+  }
+  return names;
+}
+
+static char *selected_microphone_id(AppState *state) {
+  guint selected = gtk_drop_down_get_selected(GTK_DROP_DOWN(state->microphone));
+  if (state->microphone_ids == NULL || selected >= state->microphone_ids->len) return g_strdup("");
+  return g_strdup(g_ptr_array_index(state->microphone_ids, selected));
+}
+
+static void select_microphone_id(AppState *state, const char *id) {
+  if (id == NULL || id[0] == '\0' || state->microphone_ids == NULL) return;
+  for (guint i = 0; i < state->microphone_ids->len; i++) {
+    const char *item = g_ptr_array_index(state->microphone_ids, i);
+    if (item != NULL && strcmp(item, id) == 0) {
+      gtk_drop_down_set_selected(GTK_DROP_DOWN(state->microphone), i);
+      return;
+    }
+  }
+}
+
 static char *camera_device_path(const char *selected) {
   char *path = NULL;
   GstDeviceMonitor *monitor = gst_device_monitor_new();
@@ -183,33 +252,6 @@ static char *camera_device_path(const char *selected) {
   gst_object_unref(monitor);
 
   return path == NULL ? g_strdup("/dev/video0") : path;
-}
-
-static char *audio_device_name(const char *selected) {
-  char *name = NULL;
-  GstDeviceMonitor *monitor = gst_device_monitor_new();
-  gst_device_monitor_add_filter(monitor, "Audio/Source", NULL);
-  gst_device_monitor_start(monitor);
-
-  GList *devices = gst_device_monitor_get_devices(monitor);
-  for (GList *node = devices; node != NULL; node = node->next) {
-    GstDevice *device = GST_DEVICE(node->data);
-    const char *display_name = gst_device_get_display_name(device);
-    if (selected[0] != '\0' && display_name != NULL && strcmp(display_name, selected) != 0) continue;
-
-    GstStructure *props = gst_device_get_properties(device);
-    if (props != NULL) {
-      const char *node_name = gst_structure_get_string(props, "node.name");
-      if (node_name != NULL && node_name[0] != '\0') name = g_strdup(node_name);
-      gst_structure_free(props);
-    }
-    if (name != NULL) break;
-  }
-  g_list_free_full(devices, (GDestroyNotify)gst_object_unref);
-  gst_device_monitor_stop(monitor);
-  gst_object_unref(monitor);
-
-  return name == NULL ? g_strdup("") : name;
 }
 
 static gboolean update_preview(gpointer data) {
@@ -269,11 +311,14 @@ static void stop_preview(AppState *state) {
 static void stop_recording_pipeline(AppState *state) {
   if (state->record_pipeline == NULL) return;
 
+  if (state->record_bus_watch != 0) {
+    g_source_remove(state->record_bus_watch);
+    state->record_bus_watch = 0;
+  }
   gst_element_send_event(state->record_pipeline, gst_event_new_eos());
-  GstBus *bus = gst_element_get_bus(state->record_pipeline);
   GstMessage *message = gst_bus_timed_pop_filtered(
-    bus,
-    5 * GST_SECOND,
+    state->record_bus,
+    2 * GST_SECOND,
     GST_MESSAGE_EOS | GST_MESSAGE_ERROR);
   if (message != NULL) {
     if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_ERROR) {
@@ -286,11 +331,133 @@ static void stop_recording_pipeline(AppState *state) {
     }
     gst_message_unref(message);
   }
-  gst_object_unref(bus);
+  if (state->record_bus != NULL) {
+    gst_object_unref(state->record_bus);
+    state->record_bus = NULL;
+  }
 
   gst_element_set_state(state->record_pipeline, GST_STATE_NULL);
   gst_object_unref(state->record_pipeline);
   state->record_pipeline = NULL;
+  if (state->appsink != NULL) {
+    gst_object_unref(state->appsink);
+    state->appsink = NULL;
+  }
+}
+
+static gboolean value_as_double(const GValue *value, double *out) {
+  if (G_VALUE_HOLDS_DOUBLE(value)) {
+    *out = g_value_get_double(value);
+    return TRUE;
+  }
+  if (G_VALUE_HOLDS_FLOAT(value)) {
+    *out = g_value_get_float(value);
+    return TRUE;
+  }
+  return FALSE;
+}
+
+static gboolean audio_level_db(const GValue *values, double *out) {
+  guint count = 0;
+  gboolean is_array = values != NULL && GST_VALUE_HOLDS_ARRAY(values);
+  gboolean is_list = values != NULL && GST_VALUE_HOLDS_LIST(values);
+  gboolean is_value_array = values != NULL && G_VALUE_HOLDS(values, G_TYPE_VALUE_ARRAY);
+
+  if (is_array) count = gst_value_array_get_size(values);
+  if (is_list) count = gst_value_list_get_size(values);
+  GValueArray *value_array = is_value_array ? g_value_get_boxed(values) : NULL;
+  if (value_array != NULL) count = value_array->n_values;
+  if (count == 0) return FALSE;
+
+  double best = -G_MAXDOUBLE;
+  for (guint i = 0; i < count; i++) {
+    const GValue *item = NULL;
+    if (is_array) item = gst_value_array_get_value(values, i);
+    if (is_list) item = gst_value_list_get_value(values, i);
+    if (value_array != NULL) item = g_value_array_get_nth(value_array, i);
+    double db = 0.0;
+    if (item != NULL && value_as_double(item, &db)) best = MAX(best, db);
+  }
+
+  if (best == -G_MAXDOUBLE) return FALSE;
+  *out = best;
+  return TRUE;
+}
+
+static gboolean on_record_bus_message(GstBus *bus, GstMessage *message, gpointer data) {
+  (void)bus;
+  AppState *state = data;
+
+  if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_ELEMENT) {
+    const GstStructure *structure = gst_message_get_structure(message);
+    if (structure != NULL && gst_structure_has_name(structure, "level")) {
+      const GValue *peak = gst_structure_get_value(structure, "peak");
+      double db = 0.0;
+      if (audio_level_db(peak, &db)) {
+        double normalized = (db + 80.0) / 50.0;
+        state->audio_level = CLAMP(normalized, 0.0, 1.0);
+      }
+    }
+  } else if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_ERROR) {
+    GError *error = NULL;
+    char *debug = NULL;
+    gst_message_parse_error(message, &error, &debug);
+    g_warning("recording pipeline failed: %s", error == NULL ? "unknown error" : error->message);
+    if (error != NULL) g_error_free(error);
+    g_free(debug);
+  }
+
+  return G_SOURCE_CONTINUE;
+}
+
+static void stop_level_monitor(AppState *state) {
+  if (state->level_bus_watch != 0) {
+    g_source_remove(state->level_bus_watch);
+    state->level_bus_watch = 0;
+  }
+  if (state->level_pipeline != NULL) {
+    gst_element_set_state(state->level_pipeline, GST_STATE_NULL);
+    gst_object_unref(state->level_pipeline);
+    state->level_pipeline = NULL;
+  }
+  if (state->level_bus != NULL) {
+    gst_object_unref(state->level_bus);
+    state->level_bus = NULL;
+  }
+}
+
+static void start_level_monitor(AppState *state) {
+  if (state->recording) return;
+  stop_level_monitor(state);
+
+  char *microphone = selected_microphone_id(state);
+  char *audio_device = g_shell_quote(microphone);
+  char *source = microphone[0] == '\0'
+    ? g_strdup("pulsesrc do-timestamp=true")
+    : g_strdup_printf("pulsesrc device=%s do-timestamp=true", audio_device);
+  char *pipeline = g_strdup_printf(
+    "%s ! audioconvert ! audioresample ! "
+    "level interval=50000000 post-messages=true ! fakesink sync=false",
+    source);
+  GError *error = NULL;
+
+  state->level_pipeline = gst_parse_launch(pipeline, &error);
+  if (state->level_pipeline == NULL) {
+    g_warning("audio level monitor failed: %s", error == NULL ? "unknown error" : error->message);
+    if (error != NULL) g_error_free(error);
+  } else {
+    state->level_bus = gst_element_get_bus(state->level_pipeline);
+    state->level_bus_watch = gst_bus_add_watch(state->level_bus, on_record_bus_message, state);
+    if (gst_element_set_state(state->level_pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
+      g_warning("failed to start audio level monitor");
+      stop_level_monitor(state);
+    }
+  }
+
+  g_free(pipeline);
+  g_free(source);
+  g_free(audio_device);
+  g_free(microphone);
 }
 
 static void start_preview(AppState *state) {
@@ -321,50 +488,25 @@ static void start_preview(AppState *state) {
   g_free(camera);
 }
 
-static gboolean copy_text_to_clipboard(const char *text) {
+static gboolean copy_file_to_clipboard(const char *path) {
   GdkDisplay *display = gdk_display_get_default();
   if (display == NULL) return FALSE;
-  GdkClipboard *clipboard = gdk_display_get_clipboard(display);
-  if (clipboard == NULL) return FALSE;
-  gdk_clipboard_set_text(clipboard, text);
+
+  GFile *file = g_file_new_for_path(path);
+  GFile *files[] = {file};
+  GdkFileList *file_list = gdk_file_list_new_from_array(files, 1);
+
+  GValue value = G_VALUE_INIT;
+  g_value_init(&value, GDK_TYPE_FILE_LIST);
+  g_value_take_boxed(&value, file_list);
+
+  GdkContentProvider *provider = gdk_content_provider_new_for_value(&value);
+  gdk_clipboard_set_content(gdk_display_get_clipboard(display), provider);
+
+  g_object_unref(provider);
+  g_value_unset(&value);
+  g_object_unref(file);
   return TRUE;
-}
-
-static gboolean command_exists(const char *command) {
-  char *path = g_find_program_in_path(command);
-  gboolean exists = path != NULL;
-  g_free(path);
-  return exists;
-}
-
-static gboolean copy_file_with_command(const char *path) {
-  char *uri = g_filename_to_uri(path, NULL, NULL);
-  if (uri == NULL) return FALSE;
-
-  gboolean copied = FALSE;
-  if (command_exists("wl-copy")) {
-    char *uri_list = g_strdup_printf("%s\n", uri);
-    char *gnome_files = g_strdup_printf("copy\n%s\n", uri);
-    char *argv_uri[] = {"wl-copy", "--type", "text/uri-list", uri_list, NULL};
-    char *argv_gnome[] = {"wl-copy", "--type", "x-special/gnome-copied-files", gnome_files, NULL};
-    copied = g_spawn_sync(NULL, argv_uri, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, NULL, NULL, NULL) &&
-      g_spawn_sync(NULL, argv_gnome, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, NULL, NULL, NULL);
-    g_free(uri_list);
-    g_free(gnome_files);
-  } else if (command_exists("xclip")) {
-    char *uri_list = g_strdup_printf("%s\n", uri);
-    char *argv_uri[] = {"xclip", "-selection", "clipboard", "-t", "text/uri-list", NULL};
-    copied = g_spawn_sync(NULL, argv_uri, NULL, G_SPAWN_SEARCH_PATH, NULL, uri_list, NULL, NULL, NULL, NULL);
-    g_free(uri_list);
-  }
-
-  g_free(uri);
-  return copied;
-}
-
-static gboolean copy_file_to_clipboard(const char *path) {
-  if (copy_file_with_command(path)) return TRUE;
-  return copy_text_to_clipboard(path);
 }
 
 static void make_output_path(AppState *state) {
@@ -379,9 +521,8 @@ static void make_output_path(AppState *state) {
 
 static gboolean start_recording_pipeline(AppState *state) {
   char *camera = selected_string(GTK_DROP_DOWN(state->camera), state->camera_model);
-  char *microphone = selected_string(GTK_DROP_DOWN(state->microphone), state->microphone_model);
   char *device = camera_device_path(camera);
-  char *audio_device = audio_device_name(microphone);
+  char *audio_device = selected_microphone_id(state);
   char *audio_source = audio_device[0] == '\0'
     ? g_strdup("pulsesrc do-timestamp=true")
     : g_strdup_printf("pulsesrc device=\"%s\" do-timestamp=true", audio_device);
@@ -389,9 +530,11 @@ static gboolean start_recording_pipeline(AppState *state) {
     "mp4mux name=mux faststart=true ! filesink location=\"%s\" "
     "v4l2src device=%s do-timestamp=true ! "
     "image/jpeg,width=640,height=480,framerate=30/1 ! jpegdec ! "
-    "videoconvert ! video/x-raw,format=I420 ! "
-    "openh264enc bitrate=2000000 ! h264parse ! queue ! mux. "
-    "%s ! audioconvert ! audioresample ! "
+    "videoconvert ! video/x-raw,format=I420 ! tee name=video "
+    "video. ! queue leaky=downstream max-size-buffers=1 ! videoconvert ! video/x-raw,format=RGB ! "
+    "appsink name=sink max-buffers=1 drop=true sync=false "
+    "video. ! queue ! openh264enc bitrate=2000000 ! h264parse ! queue ! mux. "
+    "%s ! audioconvert ! audioresample ! level interval=50000000 post-messages=true ! "
     "avenc_aac ! aacparse ! queue ! mux.",
     state->output_path,
     device,
@@ -403,7 +546,6 @@ static gboolean start_recording_pipeline(AppState *state) {
   g_free(audio_source);
   g_free(audio_device);
   g_free(device);
-  g_free(microphone);
   g_free(camera);
 
   if (state->record_pipeline == NULL) {
@@ -412,26 +554,54 @@ static gboolean start_recording_pipeline(AppState *state) {
     return FALSE;
   }
 
+  state->appsink = gst_bin_get_by_name(GST_BIN(state->record_pipeline), "sink");
+  if (state->appsink == NULL) {
+    g_warning("recording preview appsink not found");
+    gst_object_unref(state->record_pipeline);
+    state->record_pipeline = NULL;
+    return FALSE;
+  }
+  state->record_bus = gst_element_get_bus(state->record_pipeline);
+  state->record_bus_watch = gst_bus_add_watch(state->record_bus, on_record_bus_message, state);
+
   GstStateChangeReturn result = gst_element_set_state(state->record_pipeline, GST_STATE_PLAYING);
   if (result == GST_STATE_CHANGE_FAILURE) {
     g_warning("failed to start recording pipeline");
     gst_element_set_state(state->record_pipeline, GST_STATE_NULL);
     gst_object_unref(state->record_pipeline);
     state->record_pipeline = NULL;
+    gst_object_unref(state->appsink);
+    state->appsink = NULL;
+    if (state->record_bus_watch != 0) {
+      g_source_remove(state->record_bus_watch);
+      state->record_bus_watch = 0;
+    }
+    if (state->record_bus != NULL) {
+      gst_object_unref(state->record_bus);
+      state->record_bus = NULL;
+    }
     return FALSE;
   }
+  state->preview_timer = g_timeout_add(33, update_preview, state);
   return TRUE;
 }
 
 static gboolean tick(gpointer data) {
   AppState *state = data;
+  guint active = (guint)(CLAMP(state->audio_level, 0.0, 1.0) * LEVEL_SEGMENTS + 0.999);
+  for (guint i = 0; i < LEVEL_SEGMENTS; i++) {
+    if (i < active) {
+      gtk_widget_add_css_class(state->level_segments[i], "active");
+    } else {
+      gtk_widget_remove_css_class(state->level_segments[i], "active");
+    }
+  }
+
   if (state->recording) {
     char text[16];
     int elapsed = (int)(time(NULL) - state->started_at);
     format_seconds(elapsed, text, sizeof(text));
     gtk_label_set_text(GTK_LABEL(state->elapsed), text);
-    gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(state->progress), MIN(elapsed / 60.0, 1.0));
-    gtk_progress_bar_set_text(GTK_PROGRESS_BAR(state->progress), text);
   }
   return G_SOURCE_CONTINUE;
 }
@@ -441,36 +611,38 @@ static void on_record_clicked(GtkButton *button, gpointer data) {
 
   if (state->recording) {
     state->recording = FALSE;
+    if (state->preview_timer != 0) {
+      g_source_remove(state->preview_timer);
+      state->preview_timer = 0;
+    }
     stop_recording_pipeline(state);
     start_preview(state);
+    start_level_monitor(state);
     copy_file_to_clipboard(state->output_path);
     gtk_button_set_icon_name(button, "media-record-symbolic");
     gtk_widget_set_sensitive(state->camera, TRUE);
     gtk_widget_set_sensitive(state->microphone, TRUE);
     gtk_widget_set_sensitive(state->settings_button, TRUE);
-    gtk_label_set_text(GTK_LABEL(state->elapsed), "saved");
-    gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(state->progress), 0.0);
-    gtk_progress_bar_set_text(GTK_PROGRESS_BAR(state->progress), "ready");
     return;
   }
 
   mkdir_p(state->output_dir);
   make_output_path(state);
+  stop_level_monitor(state);
   stop_preview(state);
   if (!start_recording_pipeline(state)) {
     start_preview(state);
-    gtk_progress_bar_set_text(GTK_PROGRESS_BAR(state->progress), "recording failed");
+    start_level_monitor(state);
     return;
   }
   state->recording = TRUE;
+  state->audio_level = 0.0;
   state->started_at = time(NULL);
   gtk_button_set_icon_name(button, "media-playback-stop-symbolic");
   gtk_widget_set_sensitive(state->camera, FALSE);
   gtk_widget_set_sensitive(state->microphone, FALSE);
   gtk_widget_set_sensitive(state->settings_button, FALSE);
   gtk_label_set_text(GTK_LABEL(state->elapsed), "00:00");
-  gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(state->progress), 0.0);
-  gtk_progress_bar_set_text(GTK_PROGRESS_BAR(state->progress), "recording");
 }
 
 static void show_main(GtkButton *button, gpointer data) {
@@ -541,10 +713,26 @@ static void on_microphone_changed(GObject *object, GParamSpec *pspec, gpointer d
   (void)pspec;
   AppState *state = data;
   if (state->recording) return;
-  char *microphone = selected_string(GTK_DROP_DOWN(state->microphone), state->microphone_model);
+  char *microphone = selected_microphone_id(state);
   snprintf(state->selected_microphone, sizeof(state->selected_microphone), "%s", microphone);
   g_free(microphone);
   save_settings_file(state);
+  start_level_monitor(state);
+}
+
+static GtkWidget *build_level_meter(AppState *state) {
+  GtkWidget *meter = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 3);
+  gtk_widget_add_css_class(meter, "level-meter");
+
+  for (guint i = 0; i < LEVEL_SEGMENTS; i++) {
+    GtkWidget *segment = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_widget_add_css_class(segment, "level-segment");
+    gtk_widget_set_size_request(segment, 8, 9);
+    gtk_box_append(GTK_BOX(meter), segment);
+    state->level_segments[i] = segment;
+  }
+
+  return meter;
 }
 
 static gboolean enable_window_resize(gpointer data) {
@@ -557,7 +745,10 @@ static void load_css(void) {
   gtk_css_provider_load_from_string(provider,
     ".preview-frame { background: #000000; }"
     ".app-shell { padding: 12px; }"
-    ".controls { margin-top: 8px; }");
+    ".controls { margin-top: 8px; }"
+    ".level-meter { margin-left: 4px; margin-right: 4px; }"
+    ".level-segment { background: #4a4a4a; border-radius: 2px; min-width: 8px; min-height: 9px; }"
+    ".level-segment.active { background: #57e389; }");
   gtk_style_context_add_provider_for_display(
     gdk_display_get_default(),
     GTK_STYLE_PROVIDER(provider),
@@ -577,23 +768,25 @@ static void activate(GtkApplication *app, gpointer data) {
 
   state->root = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
   GtkWidget *preview_frame = gtk_frame_new(NULL);
-  GtkWidget *controls = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
-  GtkWidget *device_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+  GtkWidget *controls = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
   GtkWidget *status_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+  GtkWidget *device_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+  GtkWidget *left_spacer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+  GtkWidget *right_spacer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
   GtkWidget *camera_icon = gtk_image_new_from_icon_name("camera-photo-symbolic");
   GtkWidget *microphone_icon = gtk_image_new_from_icon_name("audio-input-microphone-symbolic");
   state->settings_button = gtk_button_new_from_icon_name("emblem-system-symbolic");
 
   state->preview = gtk_picture_new();
   state->elapsed = gtk_label_new("00:00");
-  state->progress = gtk_progress_bar_new();
+  state->level_meter = build_level_meter(state);
   state->record = gtk_button_new_from_icon_name("media-record-symbolic");
   state->camera_model = device_names("Video/Source", "Default camera");
-  state->microphone_model = device_names("Audio/Source", "Default microphone");
+  state->microphone_model = microphone_devices(&state->microphone_ids);
   state->camera = gtk_drop_down_new(G_LIST_MODEL(state->camera_model), NULL);
   state->microphone = gtk_drop_down_new(G_LIST_MODEL(state->microphone_model), NULL);
   select_string(GTK_DROP_DOWN(state->camera), state->camera_model, state->selected_camera);
-  select_string(GTK_DROP_DOWN(state->microphone), state->microphone_model, state->selected_microphone);
+  select_microphone_id(state, state->selected_microphone);
 
   gtk_widget_add_css_class(state->root, "app-shell");
   gtk_widget_add_css_class(preview_frame, "preview-frame");
@@ -611,10 +804,14 @@ static void activate(GtkApplication *app, gpointer data) {
   gtk_widget_set_margin_bottom(state->root, 12);
   gtk_widget_set_margin_start(state->root, 12);
   gtk_widget_set_margin_end(state->root, 12);
+  gtk_widget_set_hexpand(status_row, TRUE);
   gtk_widget_set_hexpand(device_row, TRUE);
-  gtk_widget_set_hexpand(state->progress, TRUE);
-  gtk_progress_bar_set_text(GTK_PROGRESS_BAR(state->progress), "ready");
-  gtk_progress_bar_set_show_text(GTK_PROGRESS_BAR(state->progress), TRUE);
+  gtk_widget_set_hexpand(left_spacer, TRUE);
+  gtk_widget_set_hexpand(right_spacer, TRUE);
+  gtk_widget_set_hexpand(state->camera, TRUE);
+  gtk_widget_set_hexpand(state->microphone, TRUE);
+  gtk_widget_set_hexpand(state->level_meter, FALSE);
+  gtk_widget_set_halign(state->level_meter, GTK_ALIGN_CENTER);
 
   g_signal_connect(state->camera, "notify::selected", G_CALLBACK(on_camera_changed), state);
   g_signal_connect(state->microphone, "notify::selected", G_CALLBACK(on_microphone_changed), state);
@@ -622,14 +819,16 @@ static void activate(GtkApplication *app, gpointer data) {
   g_signal_connect(state->settings_button, "clicked", G_CALLBACK(show_settings), state);
 
   gtk_frame_set_child(GTK_FRAME(preview_frame), state->preview);
+  gtk_box_append(GTK_BOX(status_row), left_spacer);
+  gtk_box_append(GTK_BOX(status_row), state->elapsed);
+  gtk_box_append(GTK_BOX(status_row), right_spacer);
+  gtk_box_append(GTK_BOX(status_row), state->record);
+  gtk_box_append(GTK_BOX(status_row), state->settings_button);
   gtk_box_append(GTK_BOX(device_row), camera_icon);
   gtk_box_append(GTK_BOX(device_row), state->camera);
   gtk_box_append(GTK_BOX(device_row), microphone_icon);
   gtk_box_append(GTK_BOX(device_row), state->microphone);
-  gtk_box_append(GTK_BOX(device_row), state->settings_button);
-  gtk_box_append(GTK_BOX(status_row), state->elapsed);
-  gtk_box_append(GTK_BOX(status_row), state->progress);
-  gtk_box_append(GTK_BOX(status_row), state->record);
+  gtk_box_append(GTK_BOX(device_row), state->level_meter);
   gtk_box_append(GTK_BOX(controls), status_row);
   gtk_box_append(GTK_BOX(controls), device_row);
   gtk_box_append(GTK_BOX(state->root), preview_frame);
@@ -638,6 +837,7 @@ static void activate(GtkApplication *app, gpointer data) {
   state->settings_root = build_settings(state);
   state->tick_timer = g_timeout_add(500, tick, state);
   start_preview(state);
+  start_level_monitor(state);
   gtk_window_set_child(GTK_WINDOW(state->window), state->root);
   gtk_window_present(GTK_WINDOW(state->window));
   g_timeout_add(500, enable_window_resize, state->window);
@@ -650,8 +850,13 @@ static void shutdown_app(GApplication *app, gpointer data) {
     state->recording = FALSE;
     stop_recording_pipeline(state);
   }
+  stop_level_monitor(state);
   stop_preview(state);
   if (state->tick_timer != 0) g_source_remove(state->tick_timer);
+  if (state->microphone_ids != NULL) {
+    g_ptr_array_unref(state->microphone_ids);
+    state->microphone_ids = NULL;
+  }
 }
 
 int main(int argc, char **argv) {
