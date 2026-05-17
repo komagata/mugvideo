@@ -10,15 +10,9 @@ The compact GTK4 window includes a live camera preview, camera and microphone se
 
 ## Install
 
-### Arch Linux / Omarchy
+### Arch Linux
 
 Mugvideo is available from the AUR:
-
-```sh
-omarchy pkg aur add mugvideo-git
-```
-
-or:
 
 ```sh
 yay -S mugvideo-git
