@@ -1,10 +1,12 @@
 # mugvideo
 
-Mugvideo is a small C + GTK4 desktop app for recording short selfie videos.
+Mugvideo is a small C + GTK4 desktop app for quickly recording selfie videos and pasting them into chat apps.
 
 ![Mugvideo screenshot](docs/screenshot.png)
 
-Mugvideo shows a live camera preview, camera and microphone selectors, a microphone input meter, and simple record/settings controls in a compact GTK4 window. Recorded videos are saved as MP4 files and copied to the clipboard as a file item so they can be pasted into compatible apps.
+Record a short video, stop recording, then paste it directly into Discord, Slack, or another app that accepts files from the clipboard. Mugvideo saves the recording as an MP4 file and puts the saved video file itself on the clipboard.
+
+The compact GTK4 window includes a live camera preview, camera and microphone selectors, a microphone input meter, and simple record/settings controls.
 
 ## Install
 
